@@ -314,7 +314,11 @@ public class ChatSkill
         else
         {
             // Get the chat response
-            chatMessage = await this.GetChatResponseAsync(chatId, userId, chatContext, cancellationToken);
+            chatMessage = await this.GetPlanResult(chatId, userId, chatContext, cancellationToken);
+            if (chatMessage == null)
+            {
+                chatMessage = await this.GetChatResponseAsync(chatId, userId, chatContext, cancellationToken);
+            }
         }
 
         context.Variables.Update(chatMessage.Content);
@@ -332,6 +336,46 @@ public class ChatSkill
     }
 
     #region Private
+
+    private async Task<ChatMessage> GetPlanResult(string chatId, string userId, SKContext chatContext, CancellationToken cancellationToken)
+    {
+        // Get the audience
+        await this.UpdateBotResponseStatusOnClientAsync(chatId, "Extracting audience", cancellationToken);
+        var audience = await this.GetAudienceAsync(chatContext, cancellationToken);
+        chatContext.ThrowIfFailed();
+
+        // Extract user intent from the conversation history.
+        await this.UpdateBotResponseStatusOnClientAsync(chatId, "Extracting user intent", cancellationToken);
+        var userIntent = await this.GetUserIntentAsync(chatContext, cancellationToken);
+        chatContext.ThrowIfFailed();
+
+        chatContext.Variables.Set("audience", audience);
+        chatContext.Variables.Set("userIntent", userIntent);
+
+        // Calculate the remaining token budget.
+        await this.UpdateBotResponseStatusOnClientAsync(chatId, "Calculating remaining token budget", cancellationToken);
+        var remainingToken = this.GetChatContextTokenLimit(audience, userIntent);
+
+        // Acquire external information from planner
+        await this.UpdateBotResponseStatusOnClientAsync(chatId, "Acquiring external information from planner", cancellationToken);
+        var externalInformationTokenLimit = (int)(remainingToken * this._promptOptions.ExternalInformationContextWeight);
+        var planResult = await this.AcquireExternalInformationAsync(chatContext, userIntent, externalInformationTokenLimit, cancellationToken, returnJson: true);
+        chatContext.ThrowIfFailed();
+
+        if (!string.IsNullOrWhiteSpace(planResult))
+        {
+            return await this.SaveNewResponseAsync(
+                planResult,
+                "",
+                chatId,
+                userId,
+                // TODO: [Issue #2106] Accommodate plan token usage differently
+                this.GetTokenUsages(chatContext),
+                cancellationToken);
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// Generate the necessary chat context to create a prompt then invoke the model to get a response.
@@ -560,12 +604,12 @@ public class ChatSkill
     /// <param name="userIntent">The user intent.</param>
     /// <param name="tokenLimit">Maximum number of tokens.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    private async Task<string> AcquireExternalInformationAsync(SKContext context, string userIntent, int tokenLimit, CancellationToken cancellationToken)
+    private async Task<string> AcquireExternalInformationAsync(SKContext context, string userIntent, int tokenLimit, CancellationToken cancellationToken = default, bool returnJson = false)
     {
         SKContext planContext = context.Clone();
         planContext.Variables.Set("tokenLimit", tokenLimit.ToString(new NumberFormatInfo()));
 
-        var plan = await this._externalInformationSkill.AcquireExternalInformationAsync(userIntent, planContext, cancellationToken);
+        var plan = await this._externalInformationSkill.AcquireExternalInformationAsync(userIntent, planContext, cancellationToken, returnJson);
 
         // Propagate the error
         planContext.ThrowIfFailed();

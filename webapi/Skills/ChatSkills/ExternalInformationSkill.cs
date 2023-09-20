@@ -95,7 +95,8 @@ public class ExternalInformationSkill
     public async Task<string> AcquireExternalInformationAsync(
         [Description("The intent to whether external information is needed")] string userIntent,
         SKContext context,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool returnJson = false)
     {
         // TODO: [Issue #2106] Calculate planner and plan token usage
         FunctionsView functions = this._planner.Kernel.Skills.GetFunctionsView(true, true);
@@ -147,6 +148,10 @@ public class ExternalInformationSkill
             if (extractJsonFromOpenApi)
             {
                 planResult = this.OptimizeOpenApiSkillJson(planResult, tokenLimit, plan);
+                if (returnJson)
+                {
+                    return planResult;
+                }
             }
             else
             {
